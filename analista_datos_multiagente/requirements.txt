@@ -1,0 +1,36 @@
+# --- Interfaz ---
+streamlit==1.55.0
+
+# --- Orquestacion multiagente ---
+langgraph==1.2.9
+langchain-core==1.5.0
+
+# --- LLM provider (narracion pedagogica en streaming) ---
+groq==1.5.0
+
+# --- Datos ---
+pandas==2.3.3
+numpy==2.4.2
+openpyxl==3.1.5
+
+# --- Machine Learning ---
+scikit-learn>=1.8
+
+# --- Refuerzo ---
+# El agente de refuerzo usa un contextual bandit propio (ligero y explicable).
+# Gymnasium se usa para formalizar el entorno simulado cuando esta disponible.
+gymnasium>=1.2
+
+# Opcional: Stable-Baselines3 (DQN/PPO sobre el entorno Gymnasium generado).
+# Requiere torch y Python <= 3.13 en la mayoria de las builds publicadas.
+# El agente detecta si esta instalado y, si no, usa el bandit propio.
+# stable-baselines3==2.7.0
+
+# --- Visualizacion ---
+plotly==6.8.0
+
+# --- Panel de resultados reordenable (Capa 3 y tarjetas del reporte ejecutivo) ---
+# Envuelve SortableJS; solo reordena el orden de las tarjetas nativas de Streamlit
+# (no reemplaza los graficos Plotly). Si no esta disponible en el entorno, la app
+# cae automaticamente a un layout estatico (ver app.py, _SORTABLES_AVAILABLE).
+streamlit-sortables>=0.3.1
