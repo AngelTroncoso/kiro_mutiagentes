@@ -35,22 +35,18 @@ plotly==6.8.0
 # cae automaticamente a un layout estatico (ver app.py, _SORTABLES_AVAILABLE).
 streamlit-sortables>=0.3.1
 
-# Fijado explicito: audio-recorder-streamlit (mas abajo) declara "altair<5" como
-# dependencia y, si se instala sin este pin, downgradea altair (usado por
-# Streamlit) a la rama 4.x. En runtime igual funciona porque el widget no usa
-# altair directamente, pero fijarlo evita el downgrade silencioso en instalaciones
-# nuevas. Preferimos el widget nativo `st.audio_input` (ver app.py); este paquete
-# es solo un respaldo para versiones viejas de Streamlit.
-altair>=5,<7
-
 # --- Capa 7: Chat de voz con el Analista ---
 # Captura de audio: se usa el widget nativo `st.audio_input` (Streamlit >= 1.31),
 # que no depende de un componente de terceros y solicita el permiso de microfono
-# de forma confiable. `audio-recorder-streamlit` queda como respaldo secundario
-# solo para versiones viejas de Streamlit sin `st.audio_input` (ver app.py,
-# _NATIVE_AUDIO_INPUT / _AUDIO_RECORDER_AVAILABLE). Si ninguno funciona, la app
-# cae al campo de texto.
-audio-recorder-streamlit>=0.0.10
+# de forma confiable. NOTA: `audio-recorder-streamlit` (respaldo para Streamlit
+# viejo sin `st.audio_input`) se dejo FUERA de este archivo a proposito: declara
+# "altair<5" como dependencia, lo cual choca con la version de altair que exige
+# streamlit>=1.30 y hace que `pip install -r requirements.txt` falle por completo
+# (visto en despliegues de Streamlit Cloud: build roto -> pantalla en blanco,
+# sin relacion con las claves de API). El codigo en app.py ya detecta con
+# try/except si el paquete no esta instalado y cae al campo de texto sin
+# problema (_AUDIO_RECORDER_AVAILABLE). Si en el futuro se necesita reactivarlo,
+# instalarlo aparte y verificar que no rompa la resolucion de dependencias.
 # STT: usa la API de Groq Whisper (misma GROQ_API_KEY). Sin libreria extra.
 # TTS: ElevenLabs (ELEVENLABS_API_KEY) con fallback a gTTS (sin clave, requiere internet).
 elevenlabs>=1.0
