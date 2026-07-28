@@ -116,6 +116,16 @@ def run_unsupervised(state) -> dict[str, Any]:
         "Explica a un principiante que grupos apareceron y que significa el silhouette. "
         f"Resultado: {fallback}", fallback))
 
+    # Perfil numerico completo por cluster (no solo el rasgo mas distintivo),
+    # base trazable para la matriz BCG/PESTEL de la Capa 10 (War Room). Todos
+    # los valores son medias REALES de columnas del dataset, agrupadas por el
+    # cluster ya calculado; nada se inventa.
+    cluster_profile: dict[int, dict[str, float]] = {}
+    if numeric_cols:
+        for c in labels_unique(labels):
+            row = means.loc[c]
+            cluster_profile[int(c)] = {col: float(row[col]) for col in numeric_cols}
+
     result = {
         "status": "ok",
         "best_k": best_k,
@@ -124,6 +134,8 @@ def run_unsupervised(state) -> dict[str, Any]:
         "quality": quality,
         "distinctive": profile_txt,
         "score_norm": float(np.clip((best_sil + 1) / 2, 0, 1)),
+        "cluster_profile": cluster_profile,
+        "overall_mean": {col: float(df[col].mean()) for col in numeric_cols} if numeric_cols else {},
     }
     bus.result(AGENT, "unsupervised", result)
     bus.agent_end(AGENT, f"{best_k} clusters (silhouette={best_sil:.2f}).")

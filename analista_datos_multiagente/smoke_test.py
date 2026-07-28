@@ -443,6 +443,90 @@ def run_logistics_viz_smoke_test() -> bool:
     return ok
 
 
+def run_war_room_smoke_test() -> bool:
+    """Capa 10: verifica que el what-if re-prediga con el modelo YA entrenado
+
+    (sin reentrenar) y que mover un slider a un extremo conocido cambie la
+    prediccion en la direccion matematicamente esperada; y que la matriz BCG
+    genere un cuadrante por cluster ya calculado, sin inventar segmentos.
+    """
+    print(f"\n{'='*70}\nCAPA 10: War Room de escenarios (estrategia)\n{'='*70}")
+    from agents.etl_agent import run_etl
+    from agents.router_agent import run_router
+    from agents.supervised_agent import run_supervised
+    from agents.unsupervised_agent import run_unsupervised
+    from utils.war_room import (
+        build_baseline_row,
+        build_bcg_quadrants,
+        default_bcg_axes,
+        predict_scenario,
+    )
+
+    ok = True
+    rng = np.random.default_rng(0)
+    n = 300
+    ingreso = rng.normal(3000, 800, n)
+    otra = rng.normal(50, 10, n)
+    # 'precio' depende monotonamente y fuertemente de 'ingreso' (relacion
+    # conocida): sirve para verificar la direccion de la re-prediccion.
+    precio = 500 + 10 * ingreso + rng.normal(0, 200, n)
+    df = pd.DataFrame({"ingreso": ingreso, "otra": otra, "precio": precio})
+
+    bus = EventBus()
+    state = new_state(df, bus, domain="estrategia")
+    th = run_in_thread(lambda: state.update(run_etl(state)), bus)
+    drain_bus(bus, th)
+    bus2 = EventBus()
+    state["bus"] = bus2
+    th2 = run_in_thread(lambda: state.update(run_router(state)), bus2)
+    drain_bus(bus2, th2)
+
+    state["target_column"] = "precio"
+    bus3 = EventBus()
+    state["bus"] = bus3
+    th3 = run_in_thread(lambda: state.update(run_supervised(state)), bus3)
+    drain_bus(bus3, th3)
+    bus4 = EventBus()
+    state["bus"] = bus4
+    th4 = run_in_thread(lambda: state.update(run_unsupervised(state)), bus4)
+    drain_bus(bus4, th4)
+
+    sup = state["supervised_result"]
+    uns = state["unsupervised_result"]
+
+    # --- 1. Re-prediccion sin reentrenar, direccion esperada ---
+    has_trained_model = sup.get("status") == "ok" and sup.get("trained_model") is not None
+    print(f"[Artefacto] modelo entrenado disponible sin reentrenar: "
+          f"{'OK' if has_trained_model else 'FALLO'}")
+    ok &= has_trained_model
+
+    baseline = build_baseline_row(state["clean_df"], "precio")
+    lo = predict_scenario(sup, baseline,
+                          {"ingreso": float(state["clean_df"]["ingreso"].min())})
+    hi = predict_scenario(sup, baseline,
+                          {"ingreso": float(state["clean_df"]["ingreso"].max())})
+    direction_ok = (lo.get("status") == "ok" and hi.get("status") == "ok"
+                    and hi["raw_prediction"] > lo["raw_prediction"])
+    print(f"[What-if] ingreso minimo -> pred={lo.get('raw_prediction'):.2f} | "
+          f"ingreso maximo -> pred={hi.get('raw_prediction'):.2f} -> "
+          f"{'OK (direccion esperada)' if direction_ok else 'FALLO'}")
+    ok &= direction_ok
+
+    # --- 2. Matriz BCG sobre clusters ya calculados (sin inventar segmentos) ---
+    x_ax, y_ax = default_bcg_axes(uns.get("overall_mean", {}), "precio")
+    quadrants = build_bcg_quadrants(uns, x_ax, y_ax)
+    bcg_ok = len(quadrants) == uns.get("best_k", -1) and uns.get("best_k", 0) > 0
+    print(f"[BCG] ejes={x_ax}/{y_ax} -> {len(quadrants)} cuadrantes vs "
+          f"{uns.get('best_k')} clusters reales -> {'OK' if bcg_ok else 'FALLO'}")
+    ok &= bcg_ok
+
+    if ok:
+        print("✅ War Room re-predice con el modelo ya entrenado (direccion "
+              "matematicamente correcta) y la matriz BCG usa solo clusters "
+              "reales, sin inventar segmentos.")
+    return ok
+
+
 def main() -> int:
     all_ok = True
 
@@ -462,11 +546,12 @@ def main() -> int:
     all_ok &= run_voice_qa_smoke_test()
     all_ok &= run_finance_montecarlo_smoke_test()
     all_ok &= run_logistics_viz_smoke_test()
+    all_ok &= run_war_room_smoke_test()
 
     print(f"\n{'='*70}")
     print(f"Matriz ejecutada: {len(cases)} casos x {len(DOMAIN_KEYS)} dominios = "
           f"{len(cases) * len(DOMAIN_KEYS)} corridas + smoke test de voz (Capa 7) "
-          f"+ Monte Carlo (Capa 8) + rutas/inventario (Capa 9).")
+          f"+ Monte Carlo (Capa 8) + rutas/inventario (Capa 9) + War Room (Capa 10).")
     print("RESULTADO GLOBAL:", "OK" if all_ok else "CON ERRORES")
     print("="*70)
     return 0 if all_ok else 1

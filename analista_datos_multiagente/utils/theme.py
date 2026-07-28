@@ -64,10 +64,28 @@ def apply_theme(domain: str | None = None) -> dict:
 
     _register_plotly_template(accent, accent2)
 
+    # Carga de tipografia NO bloqueante ("ir a la segura" con internet lento):
+    # en vez de `@import` dentro del <style> (que retiene el render de todo el
+    # bloque hasta resolver la peticion externa), usamos el patron loadCSS:
+    # el <link> se pide con media="print" (no bloquea) y solo al cargar se
+    # conmuta a media="all". Si la red esta lenta o falla, la pagina ya se
+    # pinto con las fuentes de sistema (fallback "sans-serif" siempre presente
+    # en cada font-family de este archivo), sin quedar nunca en blanco.
+    font_loader = """
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link rel="stylesheet"
+          href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600&display=swap"
+          media="print" onload="this.media='all'">
+    <noscript>
+      <link rel="stylesheet"
+            href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600&display=swap">
+    </noscript>
+    """
+    st.markdown(font_loader, unsafe_allow_html=True)
+
     css = f"""
     <style>
-    @import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600&display=swap');
-
     :root {{
         --bg: {BG};
         --surface: {SURFACE};

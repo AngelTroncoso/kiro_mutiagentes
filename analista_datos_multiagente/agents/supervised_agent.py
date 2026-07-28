@@ -74,7 +74,8 @@ def run_supervised(state) -> dict[str, Any]:
     is_classification = labels is not None
 
     feats: FeatureMatrix = build_features(df, exclude=[target])
-    X = StandardScaler().fit_transform(feats.X)
+    scaler = StandardScaler()
+    X = scaler.fit_transform(feats.X)
 
     if X.shape[1] == 0 or len(np.unique(y)) < 2 and is_classification:
         bus.warning(AGENT, "No hay suficientes variables o clases para entrenar.")
@@ -211,6 +212,17 @@ def run_supervised(state) -> dict[str, Any]:
         "Explica el resultado del modelo supervisado a un principiante: que significa la "
         f"metrica principal y por que importa. Resultado: {fallback}", fallback))
 
+    # Importancia restringida a columnas NUMERICAS reales del dataset (excluye
+    # dummies de one-hot y derivados de fecha), para que la Capa 10 (War Room)
+    # pueda ofrecer sliders intuitivos sobre columnas que el usuario reconoce.
+    numeric_importance: dict[str, float] = {}
+    for name, imp_val in zip(top_names, top_imp):
+        if name in df.columns and pd.api.types.is_numeric_dtype(df[name]) and name != target:
+            numeric_importance[name] = float(imp_val)
+    numeric_importance = dict(
+        sorted(numeric_importance.items(), key=lambda kv: kv[1], reverse=True)[:6]
+    )
+
     result = {
         "status": "ok",
         "task": "clasificacion" if is_classification else "regresion",
@@ -221,6 +233,14 @@ def run_supervised(state) -> dict[str, Any]:
         "all_models": results,
         "top_feature": top_feature,
         "score_norm": float(np.clip(score_norm, 0, 1)),
+        # --- Artefactos ya entrenados, para re-prediccion sin reentrenar ---
+        # Usados por la Capa 10 (War Room de escenarios). Viven en memoria dentro
+        # del proceso/sesion de Streamlit; nunca se serializan a disco.
+        "trained_model": best_model,
+        "trained_scaler": scaler,
+        "trained_feature_names": feats.feature_names,
+        "labels": labels,
+        "numeric_feature_importance": numeric_importance,
     }
     bus.result(AGENT, "supervised", result)
     bus.agent_end(AGENT, f"Mejor modelo: {best_name} ({primary_metric}={best_score:.3f}).")

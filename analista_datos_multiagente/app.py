@@ -49,8 +49,15 @@ from utils.logistics_viz import (
     inventory_animation,
 )
 from utils.theme import apply_theme, render_domain_badge, render_stepper
-from utils.visualization import cashflow_fan_chart, npv_distribution_hist
+from utils.visualization import bcg_matrix_scatter, cashflow_fan_chart, npv_distribution_hist
 from utils.voice import synthesize_speech, transcribe_audio, voice_status
+from utils.war_room import (
+    build_baseline_row,
+    build_bcg_quadrants,
+    default_bcg_axes,
+    predict_scenario,
+    summarize_bcg_with_llm,
+)
 
 st.set_page_config(page_title="Analista de Datos Multiagente",
                    page_icon="🤖", layout="wide")
@@ -909,3 +916,139 @@ if st.session_state.get("stage") == "analyzed":
                 st.info("No hay una columna de stock/inventario detectable en "
                        "este dataset: se omite la animacion en vez de generar "
                        "una con datos sinteticos.")
+
+    # ============================================================
+    # Innovacion - Capa 10: War Room de escenarios estrategicos
+    # Solo visible en dominio Estrategia (o General, con aviso).
+    # ============================================================
+    if active_domain in ("estrategia", "general"):
+        st.divider()
+        st.subheader("🧭 Innovacion — War Room de escenarios")
+        if active_domain == "general":
+            st.warning("Este modulo esta pensado para el dominio Estrategia. "
+                      "Puedes usarlo igual, pero interpreta los resultados con "
+                      "cautela fuera de ese contexto.")
+        st.caption("Los sliders re-predicen con el modelo YA entrenado en la "
+                  "Capa 3 (no se reentrena nada aqui). La matriz BCG usa los "
+                  "clusters YA calculados por el Agente No Supervisado.")
+
+        war_df: pd.DataFrame = st.session_state.get("clean_df")
+        sup_result = st.session_state.get("analysis_results", {}).get("supervised")
+        uns_result = st.session_state.get("analysis_results", {}).get("unsupervised")
+        target_wr = st.session_state.get("diagnosis", {}).get("target_column")
+
+        wr_tab_sliders, wr_tab_bcg = st.tabs(
+            ["🎛️ Escenarios what-if", "📊 Matriz BCG"])
+
+        # ---------------- Tab 1: sliders what-if ----------------
+        with wr_tab_sliders:
+            if not sup_result or sup_result.get("status") != "ok" or "trained_model" not in sup_result:
+                st.info("Ejecuta el analisis Supervisado (Capa 3) primero para "
+                       "habilitar los escenarios what-if.")
+            elif war_df is None:
+                st.info("Carga y limpia un dataset primero.")
+            else:
+                importance = sup_result.get("numeric_feature_importance", {})
+                if not importance:
+                    st.info("El modelo entrenado no expone variables numericas "
+                           "con importancia para construir sliders.")
+                else:
+                    baseline = build_baseline_row(war_df, target_wr)
+                    overrides: dict[str, float] = {}
+                    st.caption("Sliders sobre las variables mas importantes "
+                              "segun el grafico de importancia del Agente "
+                              "Supervisado:")
+                    for col, imp in importance.items():
+                        col_series = war_df[col]
+                        lo_v, hi_v = float(col_series.min()), float(col_series.max())
+                        default_v = float(baseline[col]) if col in baseline.index else lo_v
+                        overrides[col] = st.slider(
+                            f"{col} (importancia {imp:.2f})",
+                            min_value=lo_v, max_value=hi_v, value=default_v,
+                            key=_next_key(f"wr_slider_{col}"))
+
+                    scenario = predict_scenario(sup_result, baseline, overrides)
+                    if scenario.get("status") == "ok":
+                        if sup_result.get("task") == "clasificacion":
+                            st.success(f"**Prediccion del escenario:** "
+                                      f"{scenario.get('predicted_label')}")
+                            if scenario.get("proba"):
+                                proba_df = pd.DataFrame({
+                                    "Clase": list(scenario["proba"].keys()),
+                                    "Probabilidad": list(scenario["proba"].values()),
+                                })
+                                st.dataframe(proba_df, width="stretch", hide_index=True)
+                        else:
+                            st.success(f"**Prediccion del escenario para "
+                                      f"'{target_wr}':** {scenario['raw_prediction']:,.2f}")
+
+                        if st.button("💾 Guardar este escenario para comparar",
+                                    key=_next_key("wr_save_scenario")):
+                            saved = st.session_state.get("wr_scenarios", [])
+                            saved.append({"overrides": dict(overrides),
+                                         "result": scenario})
+                            st.session_state.wr_scenarios = saved[-3:]  # maximo 3
+                            st.rerun()
+                    else:
+                        st.warning(scenario.get("reason", "No se pudo re-predecir."))
+
+                    saved_scenarios = st.session_state.get("wr_scenarios", [])
+                    if saved_scenarios:
+                        st.markdown("**Comparador de escenarios guardados**")
+                        comp_cols = st.columns(len(saved_scenarios))
+                        for col_ui, sc in zip(comp_cols, saved_scenarios):
+                            with col_ui:
+                                with st.container(border=True):
+                                    for k, v in sc["overrides"].items():
+                                        st.caption(f"{k} = {v:.2f}")
+                                    res = sc["result"]
+                                    if sup_result.get("task") == "clasificacion":
+                                        st.metric("Prediccion", res.get("predicted_label"))
+                                    else:
+                                        st.metric("Prediccion",
+                                                 f"{res.get('raw_prediction', 0):,.2f}")
+                        if st.button("🗑️ Limpiar comparador",
+                                    key=_next_key("wr_clear_scenarios")):
+                            st.session_state.wr_scenarios = []
+                            st.rerun()
+
+        # ---------------- Tab 2: matriz BCG ----------------
+        with wr_tab_bcg:
+            if not uns_result or uns_result.get("status") != "ok":
+                st.info("Ejecuta el analisis No Supervisado (Capa 3) primero "
+                       "para habilitar la matriz BCG.")
+            else:
+                overall_mean = uns_result.get("overall_mean", {})
+                if len(overall_mean) < 2:
+                    st.info("No hay suficientes columnas numericas para armar "
+                           "una matriz BCG (se necesitan al menos 2 ejes).")
+                else:
+                    axis_cols = list(overall_mean.keys())
+                    default_x, default_y = default_bcg_axes(overall_mean, target_wr)
+                    c1, c2 = st.columns(2)
+                    with c1:
+                        x_axis = st.selectbox("Eje X (ej. participacion)",
+                                              options=axis_cols,
+                                              index=axis_cols.index(default_x)
+                                              if default_x in axis_cols else 0,
+                                              key=_next_key("wr_bcg_x"))
+                    with c2:
+                        y_axis = st.selectbox("Eje Y (ej. crecimiento)",
+                                              options=axis_cols,
+                                              index=axis_cols.index(default_y)
+                                              if default_y in axis_cols else 0,
+                                              key=_next_key("wr_bcg_y"))
+
+                    quadrants = build_bcg_quadrants(uns_result, x_axis, y_axis)
+                    if quadrants:
+                        st.plotly_chart(bcg_matrix_scatter(quadrants, x_axis, y_axis),
+                                        width="stretch", key=_next_key("wr_bcg_chart"))
+                        st.caption("Cuadrante asignado comparando cada cluster "
+                                  "contra la media global real de esas columnas "
+                                  "(sin umbrales inventados).")
+                        with st.spinner("Resumiendo la matriz..."):
+                            summary = summarize_bcg_with_llm(quadrants, x_axis, y_axis,
+                                                             active_domain)
+                        st.info(summary)
+                    else:
+                        st.warning("No se pudo construir la matriz con estos ejes.")

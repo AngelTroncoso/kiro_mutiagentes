@@ -216,6 +216,38 @@ def npv_distribution_hist(npv_samples: np.ndarray) -> go.Figure:
     return _base_layout(fig, "Distribucion del VAN sobre las simulaciones")
 
 
+def bcg_matrix_scatter(quadrants: list[dict], x_label: str, y_label: str) -> go.Figure:
+    """Matriz BCG: cada burbuja es un cluster ya calculado (tamano = filas)."""
+    if not quadrants:
+        fig = go.Figure()
+        return _base_layout(fig, "Matriz BCG (sin datos suficientes)")
+
+    x_vals = [q["x"] for q in quadrants]
+    y_vals = [q["y"] for q in quadrants]
+    sizes = [max(q["size"], 1) for q in quadrants]
+    colors = _active_colorway()
+    label_order = {"Estrella": 0, "Interrogante": 1, "Vaca lechera": 2, "Perro": 3}
+
+    fig = go.Figure()
+    for q, sz in zip(quadrants, sizes):
+        color_idx = label_order.get(q["label"], 0)
+        fig.add_trace(go.Scatter(
+            x=[q["x"]], y=[q["y"]], mode="markers+text",
+            marker=dict(size=max(20, min(70, sz ** 0.5 * 8)),
+                       color=colors[color_idx % len(colors)], opacity=0.75),
+            text=[f"Cluster {q['cluster']}"], textposition="top center",
+            name=f"Cluster {q['cluster']} ({q['label']})",
+        ))
+
+    x_mid = float(np.mean(x_vals))
+    y_mid = float(np.mean(y_vals))
+    fig.add_vline(x=x_mid, line_dash="dash", line_color="rgba(255,255,255,0.3)")
+    fig.add_hline(y=y_mid, line_dash="dash", line_color="rgba(255,255,255,0.3)")
+
+    fig.update_layout(xaxis_title=x_label, yaxis_title=y_label, showlegend=True)
+    return _base_layout(fig, "Matriz BCG (sobre clusters reales)")
+
+
 def recommendation_radar(scores: dict[str, float]) -> go.Figure:
     cats = list(scores.keys())
     vals = list(scores.values())
