@@ -34,3 +34,16 @@ plotly==6.8.0
 # (no reemplaza los graficos Plotly). Si no esta disponible en el entorno, la app
 # cae automaticamente a un layout estatico (ver app.py, _SORTABLES_AVAILABLE).
 streamlit-sortables>=0.3.1
+
+# --- Capa 7: Chat de voz con el Analista ---
+# Captura de audio: se usa el widget nativo `st.audio_input` (Streamlit >= 1.31),
+# que no depende de un componente de terceros y solicita el permiso de microfono
+# de forma confiable. `audio-recorder-streamlit` queda como respaldo secundario
+# solo para versiones viejas de Streamlit sin `st.audio_input` (ver app.py,
+# _NATIVE_AUDIO_INPUT / _AUDIO_RECORDER_AVAILABLE). Si ninguno funciona, la app
+# cae al campo de texto.
+audio-recorder-streamlit>=0.0.10
+# STT: usa la API de Groq Whisper (misma GROQ_API_KEY). Sin libreria extra.
+# TTS: ElevenLabs (ELEVENLABS_API_KEY) con fallback a gTTS (sin clave, requiere internet).
+elevenlabs>=1.0
+gTTS>=2.5

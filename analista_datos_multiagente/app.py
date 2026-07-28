@@ -27,6 +27,7 @@ import pandas as pd
 import streamlit as st
 
 from agents.recommender_agent import GOAL_LABELS
+from agents.voice_qa_agent import answer_question
 from orchestrator.graph import run_analysis_phase, run_diagnosis_phase
 from orchestrator.state import new_state
 from utils.data_loading import basic_overview, load_dataframe
@@ -34,6 +35,7 @@ from utils.domain_config import DOMAIN_KEYS, get_domain, goal_labels_for
 from utils.llm import is_llm_available
 from utils.streaming import EventBus, run_in_thread
 from utils.theme import apply_theme, render_domain_badge, render_stepper
+from utils.voice import synthesize_speech, transcribe_audio, voice_status
 
 st.set_page_config(page_title="Analista de Datos Multiagente",
                    page_icon="🤖", layout="wide")
@@ -49,6 +51,25 @@ try:
     _SORTABLES_AVAILABLE = True
 except Exception:  # noqa: BLE001
     _SORTABLES_AVAILABLE = False
+
+# --- Captura de audio para la Capa 7 (con degradacion en 2 niveles) ---------
+# Nivel 1 (preferido): st.audio_input, nativo de Streamlit >= 1.31. No depende
+# de un componente de terceros, asi que el navegador SI muestra el prompt de
+# permiso de microfono de forma confiable.
+_NATIVE_AUDIO_INPUT = hasattr(st, "audio_input")
+
+# Nivel 2 (respaldo): audio-recorder-streamlit, un componente de terceros que
+# en algunos navegadores/versiones de Streamlit no solicita el permiso de
+# microfono correctamente (iframe sin `allow="microphone"`). Se usa solo si
+# el nativo no existe (Streamlit viejo).
+try:
+    from audio_recorder_streamlit import audio_recorder
+
+    _AUDIO_RECORDER_AVAILABLE = True
+except Exception:  # noqa: BLE001
+    _AUDIO_RECORDER_AVAILABLE = False
+
+_AUDIO_INPUT_AVAILABLE = _NATIVE_AUDIO_INPUT or _AUDIO_RECORDER_AVAILABLE
 
 
 def _next_key(prefix: str) -> str:
@@ -339,6 +360,7 @@ if "raw_df" in st.session_state:
 
             st.session_state.clean_df = state.get("clean_df")
             st.session_state.diagnosis = state.get("diagnosis", {})
+            st.session_state.etl_report = state.get("etl_report", {})
             st.session_state.collected_diag = collected
             st.session_state.stage = "diagnosed"
             st.rerun()
@@ -561,3 +583,96 @@ if st.session_state.get("stage") == "analyzed":
             )
     else:
         st.info("El reporte ejecutivo se genera automaticamente al finalizar el analisis.")
+
+    # ============================================================
+    # Innovacion - Capa 7: Chat de voz con el Analista
+    # ============================================================
+    st.divider()
+    st.subheader("🎙️ Innovacion — Preguntale al Analista")
+    st.caption("Preguntas en lenguaje natural sobre lo que YA se calculo. Las "
+              "respuestas citan siempre el agente fuente y nunca inventan cifras.")
+
+    vstatus = voice_status()
+    status_bits = []
+    status_bits.append("🎤 Voz->texto (Groq Whisper): " +
+                       ("activo" if vstatus["stt"] else "no disponible (usa texto)"))
+    status_bits.append("🔊 Texto->voz: " +
+                       ("ElevenLabs" if vstatus["tts_elevenlabs"] else "gTTS (respaldo)"))
+    st.caption(" · ".join(status_bits))
+
+    voice_state = {
+        "etl_report": st.session_state.get("etl_report", {}),
+        "diagnosis": st.session_state.get("diagnosis", {}),
+        "supervised_result": results.get("supervised"),
+        "unsupervised_result": results.get("unsupervised"),
+        "reinforcement_result": results.get("reinforcement"),
+        "recommendation": st.session_state.get("recommendation"),
+        "executive_report": st.session_state.get("executive_report"),
+    }
+
+    hands_free = st.toggle("🖐️ Modo manos libres (transcribe y responde en audio "
+                          "automaticamente)", value=False,
+                          help="Accesibilidad: transcripcion en vivo + respuesta "
+                               "en audio y texto simultaneo.")
+
+    with st.container(border=True):
+        question_text = None
+
+        if _NATIVE_AUDIO_INPUT:
+            st.caption("🎤 Grava tu pregunta con el microfono (el navegador te "
+                      "pedira permiso la primera vez):")
+            audio_value = st.audio_input("Pregunta por voz",
+                                         key=_next_key("voice_recorder"),
+                                         label_visibility="collapsed")
+            audio_bytes = audio_value.getvalue() if audio_value is not None else None
+            if audio_bytes:
+                transcribed = transcribe_audio(audio_bytes)
+                if transcribed:
+                    st.success(f"🎤 Transcrito: \"{transcribed}\"")
+                    question_text = transcribed
+                else:
+                    st.warning("No pude transcribir el audio (sin GROQ_API_KEY o "
+                              "fallo de red). Escribe tu pregunta abajo.")
+        elif _AUDIO_RECORDER_AVAILABLE:
+            st.caption("🎤 Grava tu pregunta (haz clic en el icono; si el "
+                      "navegador no pide permiso de microfono, usa el campo de "
+                      "texto de abajo):")
+            audio_bytes = audio_recorder(text="", icon_size="2x",
+                                         key=_next_key("voice_recorder"))
+            if audio_bytes:
+                transcribed = transcribe_audio(audio_bytes)
+                if transcribed:
+                    st.success(f"🎤 Transcrito: \"{transcribed}\"")
+                    question_text = transcribed
+                else:
+                    st.warning("No pude transcribir el audio (sin GROQ_API_KEY o "
+                              "fallo de red). Escribe tu pregunta abajo.")
+        else:
+            st.caption("(Captura de audio no disponible en este entorno: usa el "
+                      "campo de texto.)")
+
+        typed = st.text_input(
+            "O escribe tu pregunta",
+            placeholder="Ej: ¿cual fue el mejor modelo? / ¿que variable importa mas?",
+            key=_next_key("voice_text_input"),
+        )
+        ask_clicked = st.button("Preguntar", key=_next_key("voice_ask_btn"))
+
+        final_question = question_text or (typed if ask_clicked and typed else None)
+        if question_text or (ask_clicked and typed):
+            final_question = question_text or typed
+            with st.spinner("Consultando el estado del analisis..."):
+                qa_result = answer_question(final_question, voice_state)
+
+            st.markdown(f"**🗣️ Pregunta:** {final_question}")
+            st.info(f"**🤖 Respuesta:** {qa_result['answer']}")
+            st.caption(f"Fuente: {qa_result['source_agent']} · "
+                      f"motor: {qa_result['engine']}")
+
+            if hands_free:
+                audio_out, engine_out = synthesize_speech(qa_result["answer"])
+                if audio_out:
+                    st.audio(audio_out, format="audio/mp3")
+                    st.caption(f"🔊 Audio generado con {engine_out}.")
+                else:
+                    st.caption("(Sin motor de voz disponible: solo texto.)")

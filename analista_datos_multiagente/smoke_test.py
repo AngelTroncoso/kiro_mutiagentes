@@ -214,6 +214,84 @@ def _assert_identical_metrics(all_metrics: dict[str, dict[str, dict]], case_name
     return ok
 
 
+def run_case_full_state(df: pd.DataFrame, business_goal: str, domain: str) -> dict:
+    """Igual que run_case pero devuelve el `state2` completo (para Capa 7)."""
+    bus = EventBus()
+    state = new_state(df.copy(), bus, domain=domain)
+
+    def _job1():
+        state.update(run_diagnosis_phase(state))
+
+    th = run_in_thread(_job1, bus)
+    drain_bus(bus, th)
+
+    diagnosis = state.get("diagnosis", {})
+    bus2 = EventBus()
+    state2 = new_state(state["clean_df"].copy(), bus2, domain=domain)
+    state2["clean_df"] = state["clean_df"].copy()
+    state2["diagnosis"] = diagnosis
+    state2["etl_report"] = state.get("etl_report", {})
+    state2["selected_analyses"] = diagnosis["applicable"]
+    state2["target_column"] = diagnosis.get("target_column")
+    state2["business_goal"] = business_goal
+
+    def _job2():
+        state2.update(run_analysis_phase(state2))
+
+    th2 = run_in_thread(_job2, bus2)
+    drain_bus(bus2, th2)
+    return state2
+
+
+def run_voice_qa_smoke_test() -> bool:
+    """Capa 7: simula 5 preguntas con 'transcripcion mockeada' (texto directo,
+
+    equivalente a saltarse el STT) y verifica que ninguna respuesta contenga
+    numeros ausentes del estado ya calculado.
+    """
+    print(f"\n{'='*70}\nCAPA 7: Asistente de voz (QA sobre el estado)\n{'='*70}")
+    from agents.voice_qa_agent import (
+        _validate_no_invented_numbers,
+        answer_question,
+        build_context_facts,
+    )
+
+    os.environ.pop("GROQ_API_KEY", None)  # forzamos el motor de plantillas (sin red)
+    state = run_case_full_state(make_classification_df(), "predecir", "finanzas")
+    facts = build_context_facts(state)
+
+    mocked_questions = [
+        "¿Cual fue el mejor modelo?",
+        "¿Que variable importa mas?",
+        "¿Cuantas filas tiene el dataset?",
+        "¿Cuantos clusters encontraron?",
+        "¿Que dice el reporte sobre el siguiente paso?",
+    ]
+
+    ok = True
+    for q in mocked_questions:
+        result = answer_question(q, state)
+        answer = result["answer"]
+        valid = _validate_no_invented_numbers(answer, facts)
+        cita_fuente = bool(re_search_agent_mention(answer))
+        status = "OK" if (valid and cita_fuente) else "FALLO"
+        if not (valid and cita_fuente):
+            ok = False
+        print(f"[{status}] Q: {q}\n       A: {answer}\n       "
+              f"(engine={result['engine']}, sin_cifras_inventadas={valid}, "
+              f"cita_fuente={cita_fuente})")
+
+    if ok:
+        print("✅ Las 5 respuestas citan fuente y no contienen cifras ausentes "
+              "del estado calculado.")
+    return ok
+
+
+def re_search_agent_mention(answer: str) -> bool:
+    keywords = ("Agente", "Reporte Ejecutivo", "LLM (validado")
+    return any(k.lower() in answer.lower() for k in keywords)
+
+
 def main() -> int:
     all_ok = True
 
@@ -230,9 +308,11 @@ def main() -> int:
             metrics_per_domain[domain] = metrics
         all_ok &= _assert_identical_metrics(metrics_per_domain, case_name)
 
+    all_ok &= run_voice_qa_smoke_test()
+
     print(f"\n{'='*70}")
     print(f"Matriz ejecutada: {len(cases)} casos x {len(DOMAIN_KEYS)} dominios = "
-          f"{len(cases) * len(DOMAIN_KEYS)} corridas.")
+          f"{len(cases) * len(DOMAIN_KEYS)} corridas + smoke test de voz (Capa 7).")
     print("RESULTADO GLOBAL:", "OK" if all_ok else "CON ERRORES")
     print("="*70)
     return 0 if all_ok else 1
