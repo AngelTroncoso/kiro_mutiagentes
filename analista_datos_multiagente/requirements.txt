@@ -55,3 +55,11 @@ audio-recorder-streamlit>=0.0.10
 # TTS: ElevenLabs (ELEVENLABS_API_KEY) con fallback a gTTS (sin clave, requiere internet).
 elevenlabs>=1.0
 gTTS>=2.5
+
+# --- Capa 8: Simulador Monte Carlo de flujo de caja (dominio Finanzas) ---
+# scipy.optimize.brentq calcula la TIR (IRR) sobre el flujo promedio simulado.
+scipy>=1.11
+
+# --- Capa 9: Rutas e inventario animado (dominio Logistica) ---
+# pydeck ya viene con streamlit, se fija explicito por claridad de dependencias.
+pydeck>=0.8

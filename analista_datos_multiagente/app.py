@@ -42,6 +42,12 @@ from utils.finance_sim import (
     detect_monetary_columns,
     run_monte_carlo,
 )
+from utils.logistics_viz import (
+    availability_report as logistics_availability_report,
+    build_routes_map,
+    compute_reorder_point,
+    inventory_animation,
+)
 from utils.theme import apply_theme, render_domain_badge, render_stepper
 from utils.visualization import cashflow_fan_chart, npv_distribution_hist
 from utils.voice import synthesize_speech, transcribe_audio, voice_status
@@ -804,3 +810,102 @@ if st.session_state.get("stage") == "analyzed":
                         width="stretch", key=_next_key("mc_npv_hist"))
                     st.caption("Distribucion completa del VAN sobre todas las "
                               "iteraciones simuladas.")
+
+    # ============================================================
+    # Innovacion - Capa 9: Rutas e inventario animado
+    # Solo visible en dominio Logistica (o General, con aviso).
+    # ============================================================
+    if active_domain in ("logistica", "general"):
+        st.divider()
+        st.subheader("🚚 Innovacion — Rutas e inventario animado")
+        if active_domain == "general":
+            st.warning("Este modulo esta pensado para el dominio Logistica. "
+                      "Puedes usarlo igual, pero interpreta los resultados con "
+                      "cautela fuera de ese contexto.")
+
+        log_df: pd.DataFrame = st.session_state.get("clean_df")
+        if log_df is None or log_df.empty:
+            st.info("Carga y limpia un dataset primero para habilitar este modulo.")
+        else:
+            log_rep = logistics_availability_report(log_df)
+
+            # --- Mapa de rutas ---
+            st.markdown("**Mapa de rutas**")
+            if log_rep["has_real_coords"]:
+                st.caption(f"Coordenadas reales detectadas: "
+                          f"'{log_rep['lat_col']}' / '{log_rep['lon_col']}'.")
+                try:
+                    import pydeck as pdk
+
+                    map_df = log_df[[log_rep["lat_col"], log_rep["lon_col"]]].dropna()
+                    st.pydeck_chart(pdk.Deck(
+                        layers=[pdk.Layer("ScatterplotLayer", data=map_df,
+                                          get_position=f"[{log_rep['lon_col']}, "
+                                                       f"{log_rep['lat_col']}]",
+                                          get_radius=200, get_fill_color=[139, 92, 246])],
+                        initial_view_state=pdk.ViewState(
+                            latitude=float(map_df[log_rep["lat_col"]].mean()),
+                            longitude=float(map_df[log_rep["lon_col"]].mean()),
+                            zoom=4),
+                    ))
+                except Exception as exc:  # noqa: BLE001
+                    st.caption(f"(No se pudo renderizar el mapa: {exc})")
+            elif log_rep["categorical_location_col"]:
+                loc_col = log_rep["categorical_location_col"]
+                st.caption(
+                    f"El dataset no tiene columnas de latitud/longitud, pero "
+                    f"tiene '{loc_col}' (categorica). Asigna coordenadas para "
+                    f"cada valor para visualizar el mapa; sin este mapeo, no se "
+                    f"inventa ninguna coordenada.")
+                unique_vals = sorted(str(v) for v in log_df[loc_col].dropna().unique())[:12]
+                with st.form("logistics_map_form"):
+                    manual_coords: dict[str, tuple[float, float]] = {}
+                    for val in unique_vals:
+                        c1, c2 = st.columns(2)
+                        lat_v = c1.number_input(f"Latitud de '{val}'", value=0.0,
+                                                format="%.4f", key=_next_key(f"lat_{val}"))
+                        lon_v = c2.number_input(f"Longitud de '{val}'", value=0.0,
+                                                format="%.4f", key=_next_key(f"lon_{val}"))
+                        manual_coords[val] = (lat_v, lon_v)
+                    map_submit = st.form_submit_button("▶ Generar mapa de rutas")
+                if map_submit:
+                    valid_coords = {k: v for k, v in manual_coords.items()
+                                    if v != (0.0, 0.0)}
+                    deck, n_routes = build_routes_map(
+                        log_df, loc_col, valid_coords,
+                        delay_col=log_rep.get("delay_col"))
+                    if deck is not None:
+                        st.pydeck_chart(deck)
+                        st.caption(f"{n_routes} rutas graficadas. Color coral = "
+                                  f"con retraso; cian = a tiempo (segun "
+                                  f"'{log_rep.get('delay_col')}').")
+                    else:
+                        st.warning("Ingresa al menos una coordenada distinta de "
+                                  "(0, 0) para generar el mapa.")
+            else:
+                st.info("No hay columnas de ubicacion (ni coordenadas ni "
+                       "categoricas tipo ciudad/ruta) en este dataset: el mapa "
+                       "queda oculto en vez de mostrar datos inventados.")
+
+            # --- Animacion de inventario ---
+            st.markdown("**Evolucion de inventario**")
+            if log_rep["inventory_possible"]:
+                stock_col = log_rep["stock_col"]
+                rop_info = compute_reorder_point(log_df[stock_col])
+                st.caption(
+                    f"Punto de reorden calculado como el percentil "
+                    f"{rop_info['percentile']:.0f} REAL de '{stock_col}' "
+                    f"({rop_info['rop']:,.0f}), entre un minimo de "
+                    f"{rop_info['min']:,.0f} y un maximo de {rop_info['max']:,.0f} "
+                    f"observados. No es una formula de demanda x lead time "
+                    f"(el dataset no tiene consumo diario); es un metodo simple "
+                    f"y transparente sobre los datos disponibles.")
+                fig_inv = inventory_animation(log_df[stock_col], rop_info["rop"])
+                st.plotly_chart(fig_inv, width="stretch", key=_next_key("inv_anim"))
+                st.caption("Eje X: orden de los registros en el dataset limpio "
+                          "(no hay columna de fecha real). Puntos en color de "
+                          "alerta = stock por debajo del punto de reorden.")
+            else:
+                st.info("No hay una columna de stock/inventario detectable en "
+                       "este dataset: se omite la animacion en vez de generar "
+                       "una con datos sinteticos.")

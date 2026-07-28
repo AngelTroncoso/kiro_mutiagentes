@@ -369,6 +369,80 @@ def run_finance_montecarlo_smoke_test() -> bool:
     return ok
 
 
+def run_logistics_viz_smoke_test() -> bool:
+    """Capa 9: genera el mapa de rutas y la animacion de inventario sobre
+
+    datos_ejemplo_logistica.csv (dataset real del proyecto, sin coordenadas
+    reales) y verifica la degradacion en cascada esperada: sin lat/lon reales
+    el mapa NO inventa coordenadas por defecto (requiere mapeo manual), y la
+    animacion de inventario se genera sin excepciones con un ROP trazable.
+    """
+    print(f"\n{'='*70}\nCAPA 9: Rutas e inventario animado (logistica)\n{'='*70}")
+    from utils.logistics_viz import (
+        availability_report,
+        build_routes_map,
+        compute_reorder_point,
+        inventory_animation,
+    )
+
+    ok = True
+    csv_path = os.path.join(os.path.dirname(__file__), "datos_ejemplo_logistica.csv")
+    df = pd.read_csv(csv_path)
+
+    rep = availability_report(df)
+    print(f"[Disponibilidad] {rep}")
+
+    # El dataset de ejemplo NO tiene lat/lon reales: el sistema no debe fingir
+    # que si las tiene.
+    no_fake_coords_ok = rep["has_real_coords"] is False
+    print(f"[Anti-invencion] has_real_coords=False (correcto, el dataset no "
+          f"trae coordenadas) -> {'OK' if no_fake_coords_ok else 'FALLO'}")
+    ok &= no_fake_coords_ok
+
+    # Sin mapeo manual, el mapa NO se genera (no inventa coordenadas).
+    deck_none, n_none = build_routes_map(df, rep["categorical_location_col"], {})
+    no_map_without_mapping_ok = deck_none is None and n_none == 0
+    print(f"[Anti-invencion] sin mapeo manual -> deck=None -> "
+          f"{'OK' if no_map_without_mapping_ok else 'FALLO'}")
+    ok &= no_map_without_mapping_ok
+
+    # Con mapeo manual (ingresado explicitamente, simulando a un usuario real),
+    # el mapa SI se genera sin excepciones.
+    manual_coords = {"oriente": (4.14, -73.63), "sur": (1.21, -77.28),
+                     "centro": (4.71, -74.07), "norte": (10.96, -74.79)}
+    try:
+        deck, n_routes = build_routes_map(df, rep["categorical_location_col"],
+                                          manual_coords, delay_col=rep["delay_col"])
+        map_ok = deck is not None and n_routes > 0
+    except Exception as exc:  # noqa: BLE001
+        map_ok = False
+        print(f"❌ build_routes_map lanzo una excepcion: {exc}")
+    print(f"[Mapa] con mapeo manual -> {n_routes if map_ok else 0} rutas "
+          f"graficadas -> {'OK' if map_ok else 'FALLO'}")
+    ok &= map_ok
+
+    # Animacion de inventario: debe generarse sin excepciones, con ROP trazable.
+    try:
+        rop_info = compute_reorder_point(df[rep["stock_col"]])
+        real_p20 = float(np.percentile(pd.to_numeric(df[rep["stock_col"]],
+                                                       errors="coerce").dropna(), 20))
+        rop_trazable = abs(rop_info["rop"] - real_p20) < 1e-9
+        fig = inventory_animation(df[rep["stock_col"]], rop_info["rop"])
+        anim_ok = fig is not None and len(fig.frames) > 0 and rop_trazable
+    except Exception as exc:  # noqa: BLE001
+        anim_ok = False
+        print(f"❌ inventory_animation lanzo una excepcion: {exc}")
+    print(f"[Inventario] ROP={rop_info.get('rop')} (percentil 20 real de la "
+          f"columna) con {len(fig.frames) if anim_ok else 0} frames -> "
+          f"{'OK' if anim_ok else 'FALLO'}")
+    ok &= anim_ok
+
+    if ok:
+        print("✅ Mapa e inventario animado se generan sin excepciones, sin "
+              "inventar coordenadas ni supuestos de reorden ocultos.")
+    return ok
+
+
 def main() -> int:
     all_ok = True
 
@@ -387,11 +461,12 @@ def main() -> int:
 
     all_ok &= run_voice_qa_smoke_test()
     all_ok &= run_finance_montecarlo_smoke_test()
+    all_ok &= run_logistics_viz_smoke_test()
 
     print(f"\n{'='*70}")
     print(f"Matriz ejecutada: {len(cases)} casos x {len(DOMAIN_KEYS)} dominios = "
           f"{len(cases) * len(DOMAIN_KEYS)} corridas + smoke test de voz (Capa 7) "
-          f"+ smoke test Monte Carlo (Capa 8).")
+          f"+ Monte Carlo (Capa 8) + rutas/inventario (Capa 9).")
     print("RESULTADO GLOBAL:", "OK" if all_ok else "CON ERRORES")
     print("="*70)
     return 0 if all_ok else 1
