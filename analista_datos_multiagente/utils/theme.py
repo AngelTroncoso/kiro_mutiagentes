@@ -106,6 +106,30 @@ def apply_theme(domain: str | None = None) -> dict:
         font-family: 'Inter', sans-serif;
     }}
 
+    /* --- Header nativo de Streamlit (Share/Estrella/GitHub/Deploy) ---
+       Por defecto queda blanco aunque .stApp este oscuro; lo tenimos del mismo
+       fondo para que no se vea como una franja rota en la parte superior. */
+    header[data-testid="stHeader"] {{
+        background: var(--bg);
+    }}
+    div[data-testid="stToolbar"] {{
+        background: transparent;
+    }}
+    div[data-testid="stToolbar"] button,
+    div[data-testid="stToolbar"] svg,
+    header[data-testid="stHeader"] svg {{
+        color: var(--text-primary) !important;
+        fill: var(--text-primary) !important;
+    }}
+    /* Franja de color decorativa que Streamlit pinta justo debajo del header. */
+    div[data-testid="stDecoration"] {{
+        background: linear-gradient(90deg, var(--accent), var(--accent-2));
+    }}
+    /* El contenedor raiz tambien puede mostrar blanco durante la carga inicial. */
+    html, body, [data-testid="stAppViewContainer"] {{
+        background-color: var(--bg);
+    }}
+
     h1, h2, h3, h4, h5, .stMarkdown h1, .stMarkdown h2, .stMarkdown h3 {{
         font-family: 'Space Grotesk', sans-serif !important;
         letter-spacing: -0.01em;
