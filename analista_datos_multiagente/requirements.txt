@@ -35,6 +35,14 @@ plotly==6.8.0
 # cae automaticamente a un layout estatico (ver app.py, _SORTABLES_AVAILABLE).
 streamlit-sortables>=0.3.1
 
+# Fijado explicito: audio-recorder-streamlit (mas abajo) declara "altair<5" como
+# dependencia y, si se instala sin este pin, downgradea altair (usado por
+# Streamlit) a la rama 4.x. En runtime igual funciona porque el widget no usa
+# altair directamente, pero fijarlo evita el downgrade silencioso en instalaciones
+# nuevas. Preferimos el widget nativo `st.audio_input` (ver app.py); este paquete
+# es solo un respaldo para versiones viejas de Streamlit.
+altair>=5,<7
+
 # --- Capa 7: Chat de voz con el Analista ---
 # Captura de audio: se usa el widget nativo `st.audio_input` (Streamlit >= 1.31),
 # que no depende de un componente de terceros y solicita el permiso de microfono

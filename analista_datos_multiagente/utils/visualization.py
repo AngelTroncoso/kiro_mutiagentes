@@ -159,6 +159,63 @@ def reward_curve(rewards: list[float], baseline: float | None = None) -> go.Figu
     return _base_layout(fig, "Aprendizaje del agente por refuerzo")
 
 
+def cashflow_fan_chart(paths: np.ndarray, initial_capital: float) -> go.Figure:
+    """Banda de confianza (fan chart) del flujo de caja acumulado simulado.
+
+    `paths` es la matriz (n_iteraciones, horizonte+1) que devuelve el motor
+    Monte Carlo de `utils.finance_sim`. Se dibujan los percentiles P10/P50/P90
+    por periodo, mas una muestra de trayectorias individuales para dar
+    sensacion de "animacion" de la incertidumbre sin depender de video.
+    """
+    periods = list(range(paths.shape[1]))
+    p10 = np.percentile(paths, 10, axis=0)
+    p50 = np.percentile(paths, 50, axis=0)
+    p90 = np.percentile(paths, 90, axis=0)
+
+    fig = go.Figure()
+
+    # Muestra tenue de trayectorias individuales (sensacion de "banda viva").
+    rng = np.random.default_rng(7)
+    sample_idx = rng.choice(paths.shape[0], size=min(40, paths.shape[0]), replace=False)
+    for i in sample_idx:
+        fig.add_trace(go.Scatter(x=periods, y=paths[i], mode="lines",
+                                 line=dict(color=_accent(0), width=1),
+                                 opacity=0.06, showlegend=False, hoverinfo="skip"))
+
+    fig.add_trace(go.Scatter(x=periods + periods[::-1], y=list(p90) + list(p10[::-1]),
+                             fill="toself", fillcolor="rgba(139,92,246,0.15)",
+                             line=dict(color="rgba(0,0,0,0)"), name="Rango P10-P90",
+                             hoverinfo="skip"))
+    fig.add_trace(go.Scatter(x=periods, y=p50, mode="lines+markers",
+                             name="Mediana (P50)", line=dict(color=_accent(0), width=3)))
+    fig.add_trace(go.Scatter(x=[periods[0], periods[-1]],
+                             y=[initial_capital, initial_capital],
+                             mode="lines", name="Capital inicial",
+                             line=dict(color=_accent(2), dash="dot")))
+    fig.add_trace(go.Scatter(x=[periods[0], periods[-1]], y=[0, 0], mode="lines",
+                             name="Punto de quiebre (caja = 0)",
+                             line=dict(color=_accent(3), dash="dash")))
+
+    fig.update_layout(xaxis_title="Periodo", yaxis_title="Flujo de caja acumulado")
+    return _base_layout(fig, "Proyeccion de flujo de caja (Monte Carlo)")
+
+
+def npv_distribution_hist(npv_samples: np.ndarray) -> go.Figure:
+    """Histograma de los VAN simulados, con las lineas P10/P50/P90 marcadas."""
+    p10, p50, p90 = (float(x) for x in np.percentile(npv_samples, [10, 50, 90]))
+    fig = go.Figure(go.Histogram(x=npv_samples, marker_color=_accent(0), nbinsx=60,
+                                 opacity=0.85))
+    for value, label, color_idx in ((p10, "P10", 1), (p50, "P50 (mediana)", 0),
+                                     (p90, "P90", 2)):
+        fig.add_vline(x=value, line_color=_accent(color_idx), line_dash="dash",
+                      annotation_text=f"{label}: {value:,.0f}")
+    fig.add_vline(x=0, line_color=_accent(3), line_width=2,
+                  annotation_text="VAN = 0")
+    fig.update_layout(xaxis_title="VAN (Valor Actual Neto) simulado",
+                      yaxis_title="Frecuencia")
+    return _base_layout(fig, "Distribucion del VAN sobre las simulaciones")
+
+
 def recommendation_radar(scores: dict[str, float]) -> go.Figure:
     cats = list(scores.keys())
     vals = list(scores.values())

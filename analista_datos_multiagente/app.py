@@ -34,7 +34,16 @@ from utils.data_loading import basic_overview, load_dataframe
 from utils.domain_config import DOMAIN_KEYS, get_domain, goal_labels_for
 from utils.llm import is_llm_available
 from utils.streaming import EventBus, run_in_thread
+from utils.finance_sim import (
+    MonteCarloInputs,
+    derive_distribution,
+    derive_split_distribution,
+    detect_binary_rate,
+    detect_monetary_columns,
+    run_monte_carlo,
+)
 from utils.theme import apply_theme, render_domain_badge, render_stepper
+from utils.visualization import cashflow_fan_chart, npv_distribution_hist
 from utils.voice import synthesize_speech, transcribe_audio, voice_status
 
 st.set_page_config(page_title="Analista de Datos Multiagente",
@@ -676,3 +685,122 @@ if st.session_state.get("stage") == "analyzed":
                     st.caption(f"🔊 Audio generado con {engine_out}.")
                 else:
                     st.caption("(Sin motor de voz disponible: solo texto.)")
+
+    # ============================================================
+    # Innovacion - Capa 8: Simulador Monte Carlo de flujo de caja
+    # Solo visible en dominio Finanzas (o General, con aviso).
+    # ============================================================
+    if active_domain in ("finanzas", "general"):
+        st.divider()
+        st.subheader("💰 Innovacion — Proyeccion de flujo de caja (Monte Carlo)")
+        if active_domain == "general":
+            st.warning("Este simulador esta pensado para el dominio Finanzas. "
+                      "Puedes usarlo igual, pero interpreta los resultados con "
+                      "cautela fuera de ese contexto.")
+        st.caption("Cada parametro de la simulacion sale de una columna real del "
+                  "dataset (media y desviacion estandar reales) o de un valor que "
+                  "tu fijas explicitamente. Ningun supuesto queda oculto.")
+
+        mc_df: pd.DataFrame = st.session_state.get("clean_df")
+        if mc_df is None or mc_df.empty:
+            st.info("Carga y limpia un dataset primero para habilitar la simulacion.")
+        else:
+            numeric_cols = mc_df.select_dtypes(include="number").columns.tolist()
+            if not numeric_cols:
+                st.info("El dataset no tiene columnas numericas: no se puede "
+                       "derivar una distribucion de flujo de caja.")
+            else:
+                suggested = detect_monetary_columns(mc_df)
+                default_col = suggested[0] if suggested else numeric_cols[0]
+
+                with st.form("montecarlo_form"):
+                    c1, c2 = st.columns(2)
+                    with c1:
+                        cash_col = st.selectbox(
+                            "Columna del dataset que representa el flujo de caja "
+                            "por periodo" + (" (sugerida por nombre)" if suggested else ""),
+                            options=numeric_cols,
+                            index=numeric_cols.index(default_col),
+                        )
+                        initial_capital = st.number_input(
+                            "Capital inicial", min_value=0.0, value=100_000.0, step=1000.0)
+                        horizon = st.slider("Horizonte (numero de periodos)",
+                                           min_value=3, max_value=60, value=12)
+                    with c2:
+                        discount_rate_pct = st.slider(
+                            "Tasa de descuento por periodo (%)",
+                            min_value=0.0, max_value=10.0, value=1.0, step=0.1)
+                        n_iterations = st.select_slider(
+                            "Iteraciones Monte Carlo",
+                            options=[5000, 8000, 10000], value=8000)
+                        apply_churn = False
+                        churn_rate_preview = None
+                        target_col_mc = st.session_state.get("diagnosis", {}).get("target_column")
+                        if target_col_mc:
+                            churn_rate_preview = detect_binary_rate(mc_df, target_col_mc)
+                        if churn_rate_preview is not None:
+                            apply_churn = st.checkbox(
+                                f"Ajustar entradas con la tasa real de "
+                                f"'{target_col_mc}' detectada ({churn_rate_preview*100:.1f}%), "
+                                f"proveniente del Agente Supervisado/Router",
+                                value=(st.session_state.get("recommendation", {})
+                                      .get("winner") == "supervised"),
+                            )
+
+                    submitted_mc = st.form_submit_button("▶ Correr simulacion",
+                                                          type="primary")
+
+                if submitted_mc:
+                    split = derive_split_distribution(mc_df[cash_col])
+                    inflow, outflow = split["inflow"], split["outflow"]
+                    source_note = (
+                        f"Columna '{cash_col}': {split['mode']}, "
+                        f"n={inflow['n']} entradas (media={inflow['mean']:.2f}, "
+                        f"std={inflow['std']:.2f})"
+                        + (f", n={outflow['n']} salidas (media={outflow['mean']:.2f}, "
+                           f"std={outflow['std']:.2f})" if outflow["n"] else "")
+                    )
+                    mc_inputs = MonteCarloInputs(
+                        initial_capital=initial_capital,
+                        horizon_periods=horizon,
+                        discount_rate=discount_rate_pct / 100.0,
+                        inflow_mean=inflow["mean"], inflow_std=inflow["std"],
+                        outflow_mean=outflow["mean"], outflow_std=outflow["std"],
+                        n_iterations=n_iterations,
+                        churn_adjustment_rate=(churn_rate_preview if apply_churn else None),
+                        source_note=source_note,
+                    )
+                    mc_result = run_monte_carlo(mc_inputs)
+                    st.session_state.montecarlo_result = mc_result
+
+                mc_result = st.session_state.get("montecarlo_result")
+                if mc_result is not None:
+                    st.caption(f"Parametros trazables: {mc_result.inputs.source_note}")
+                    if mc_result.inputs.churn_adjustment_rate:
+                        st.caption(
+                            f"Ajuste aplicado: entradas reducidas en "
+                            f"{mc_result.inputs.churn_adjustment_rate*100:.1f}% "
+                            f"(tasa real detectada por el Router/Supervisado).")
+
+                    m1, m2, m3, m4 = st.columns(4)
+                    m1.metric("VAN mediana (P50)", f"{mc_result.npv_p50:,.0f}")
+                    m2.metric("VAN P10 / P90",
+                             f"{mc_result.npv_p10:,.0f} / {mc_result.npv_p90:,.0f}")
+                    irr_txt = (f"{mc_result.irr_representative*100:.1f}%"
+                              if mc_result.irr_representative is not None else "n/d")
+                    m3.metric("TIR (sobre flujo promedio)", irr_txt)
+                    m4.metric("Prob. de flujo negativo",
+                             f"{mc_result.prob_flujo_negativo*100:.1f}%")
+
+                    st.plotly_chart(
+                        cashflow_fan_chart(mc_result.paths, mc_result.inputs.initial_capital),
+                        width="stretch", key=_next_key("mc_fan_chart"))
+                    st.caption("Banda P10-P90 del flujo de caja acumulado a lo "
+                              "largo del horizonte, con una muestra de trayectorias "
+                              "individuales de fondo.")
+
+                    st.plotly_chart(
+                        npv_distribution_hist(mc_result.npv_samples),
+                        width="stretch", key=_next_key("mc_npv_hist"))
+                    st.caption("Distribucion completa del VAN sobre todas las "
+                              "iteraciones simuladas.")

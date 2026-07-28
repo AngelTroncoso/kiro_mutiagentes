@@ -292,6 +292,83 @@ def re_search_agent_mention(answer: str) -> bool:
     return any(k.lower() in answer.lower() for k in keywords)
 
 
+def run_finance_montecarlo_smoke_test() -> bool:
+    """Capa 8: verifica que NPV/IRR del motor Monte Carlo sean matematicamente
+
+    consistentes con una formula cerrada (caso determinista, std=0) y que los
+    parametros derivados de un dataset sintetico de finanzas sean trazables
+    (media/std reales de la columna, sin supuestos ocultos).
+    """
+    print(f"\n{'='*70}\nCAPA 8: Simulador Monte Carlo (finanzas)\n{'='*70}")
+    from utils.finance_sim import (
+        MonteCarloInputs,
+        derive_distribution,
+        detect_binary_rate,
+        detect_monetary_columns,
+        run_monte_carlo,
+    )
+
+    ok = True
+
+    # --- 1. Consistencia matematica (caso determinista, formula cerrada) ---
+    capital, horizon, rate = 100_000.0, 12, 0.01
+    inflow, outflow = 15_000.0, 8_000.0
+    net = inflow - outflow
+    inp = MonteCarloInputs(initial_capital=capital, horizon_periods=horizon,
+                           discount_rate=rate, inflow_mean=inflow, inflow_std=0.0,
+                           outflow_mean=outflow, outflow_std=0.0,
+                           n_iterations=500, seed=1)
+    res = run_monte_carlo(inp)
+    expected_npv = -capital + sum(net / (1 + rate) ** t for t in range(1, horizon + 1))
+    npv_ok = (abs(res.npv_p50 - expected_npv) < 1e-6
+              and abs(res.npv_p10 - expected_npv) < 1e-6
+              and abs(res.npv_p90 - expected_npv) < 1e-6)
+    irr_ok = False
+    if res.irr_representative is not None:
+        npv_at_irr = -capital + sum(
+            net / (1 + res.irr_representative) ** t for t in range(1, horizon + 1))
+        irr_ok = abs(npv_at_irr) < 1e-3
+    print(f"[Determinista] NPV esperado={expected_npv:.2f} vs simulado P50="
+          f"{res.npv_p50:.2f} -> {'OK' if npv_ok else 'FALLO'}")
+    print(f"[Determinista] IRR={res.irr_representative:.4f} anula el NPV -> "
+          f"{'OK' if irr_ok else 'FALLO'}")
+    ok &= npv_ok and irr_ok
+
+    # --- 2. Trazabilidad: parametros derivados de un dataset real ---
+    rng = np.random.default_rng(3)
+    n = 300
+    df_fin = pd.DataFrame({
+        "cliente_id": range(n),
+        "monto_transaccion": rng.normal(500, 120, n),
+        "ingreso_mensual": rng.normal(3000, 800, n),
+        "churn": rng.integers(0, 2, n),
+    })
+    monetary_cols = detect_monetary_columns(df_fin)
+    print(f"[Trazabilidad] columnas monetarias detectadas: {monetary_cols}")
+    detected_ok = "monto_transaccion" in monetary_cols and "ingreso_mensual" in monetary_cols
+    ok &= detected_ok
+
+    dist = derive_distribution(df_fin["ingreso_mensual"])
+    real_mean = float(df_fin["ingreso_mensual"].mean())
+    real_std = float(df_fin["ingreso_mensual"].std(ddof=1))
+    dist_ok = abs(dist["mean"] - real_mean) < 1e-9 and abs(dist["std"] - real_std) < 1e-9
+    print(f"[Trazabilidad] media/std derivadas == media/std reales de la columna: "
+          f"{'OK' if dist_ok else 'FALLO'}")
+    ok &= dist_ok
+
+    rate_detected = detect_binary_rate(df_fin, "churn")
+    real_rate = float((df_fin["churn"] == 1).mean())
+    rate_ok = rate_detected is not None and abs(rate_detected - real_rate) < 1e-9
+    print(f"[Trazabilidad] proporcion real de churn detectada: {rate_detected:.3f} "
+          f"(real: {real_rate:.3f}) -> {'OK' if rate_ok else 'FALLO'}")
+    ok &= rate_ok
+
+    if ok:
+        print("✅ Motor Monte Carlo consistente con formula cerrada y parametros "
+              "100% trazables a datos reales (sin supuestos ocultos).")
+    return ok
+
+
 def main() -> int:
     all_ok = True
 
@@ -309,10 +386,12 @@ def main() -> int:
         all_ok &= _assert_identical_metrics(metrics_per_domain, case_name)
 
     all_ok &= run_voice_qa_smoke_test()
+    all_ok &= run_finance_montecarlo_smoke_test()
 
     print(f"\n{'='*70}")
     print(f"Matriz ejecutada: {len(cases)} casos x {len(DOMAIN_KEYS)} dominios = "
-          f"{len(cases) * len(DOMAIN_KEYS)} corridas + smoke test de voz (Capa 7).")
+          f"{len(cases) * len(DOMAIN_KEYS)} corridas + smoke test de voz (Capa 7) "
+          f"+ smoke test Monte Carlo (Capa 8).")
     print("RESULTADO GLOBAL:", "OK" if all_ok else "CON ERRORES")
     print("="*70)
     return 0 if all_ok else 1
